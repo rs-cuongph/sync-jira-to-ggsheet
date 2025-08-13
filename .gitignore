@@ -6,3 +6,7 @@ node_modules
 .env.production.local
 dist
 
+# OAuth2 tokens
+token.json
+*.token
+
