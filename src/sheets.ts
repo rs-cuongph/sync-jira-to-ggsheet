@@ -1,10 +1,21 @@
-import { GoogleSpreadsheet } from "google-spreadsheet";
-import { google } from "googleapis";
-import { OAuth2Client } from "google-auth-library";
+import {
+  GoogleSpreadsheet,
+  GoogleSpreadsheetWorksheet,
+} from "google-spreadsheet";
 import dayjs from "dayjs";
 import type { RowOut } from "./mapping.js";
+import { GoogleOAuth2Manager } from "./oauth.js";
+import { RateLimiter } from "./rate-limiter.js";
+import { RetryManager } from "./retry.js";
 
-const BATCH_SIZE = Number(process.env.BATCH_SIZE || 500);
+// Initialize rate limiter and retry manager
+const rateLimiter = new RateLimiter(200); // 200ms between API calls
+const retryManager = new RetryManager({
+  maxRetries: 3,
+  baseDelay: 1000,
+  maxDelay: 30000,
+  backoffMultiplier: 2,
+});
 
 // Helper function to format date as YYYY/MM/DD
 function formatDateYYYYMMDD(dateString?: string): string {
@@ -37,90 +48,114 @@ function extractUsernameFromEmail(email?: string): string {
   return atIndex > 0 ? email.substring(0, atIndex) : email;
 }
 
-// Helper function to find row by issueKey in column M
-async function findRowByIssueKey(
-  sheet: any,
-  issueKey: string
-): Promise<any | null> {
-  const rows = await sheet.getRows({ offset: 0, limit: sheet.rowCount });
+// Helper function to get column letter from column name
+function getColumnLetter(columnName: string, headers: string[]): string | null {
+  const index = headers.indexOf(columnName);
+  if (index === -1) return null;
+  return String.fromCharCode(65 + index); // A=0, B=1, C=2, etc.
+}
+
+// Helper function to create a map of existing rows by issueKey
+async function createIssueKeyMap(
+  sheet: GoogleSpreadsheetWorksheet
+): Promise<Map<string, any>> {
+  const issueKeyMap = new Map<string, any>();
+
+  // Check if sheet has any data
+  if (sheet.rowCount === 0) {
+    return issueKeyMap;
+  }
+
+  // Load all rows at once to minimize API calls
+  const loadRowsWithRetry = async () => {
+    return await rateLimiter.execute(async () => {
+      return await retryManager.execute(async () => {
+        return await sheet.getRows();
+      });
+    });
+  };
+
+  const rows = await loadRowsWithRetry();
+
   for (const row of rows) {
-    const rowIssueKey = (row.get("M") || "").toString().trim();
-    if (rowIssueKey === issueKey) {
-      return row;
+    const issueKey = (row.get("Issue Key") || "").toString().trim();
+    const lastSync = (row.get("Last Sync") || "").toString().trim();
+    let canUpdate = false;
+
+    if (lastSync) {
+      const syncedAt = formatDateTimeYYYYMMDDHHMM(lastSync);
+      const syncedAtDate = dayjs(syncedAt);
+      // kiểm tra nếu last sync cách hôm nay 1 giờ thì có thể update
+      canUpdate =
+        syncedAtDate.isValid() &&
+        syncedAtDate.isAfter(dayjs().subtract(1, "hour"));
+    } else {
+      canUpdate = true;
+    }
+
+    if (canUpdate) {
+      issueKeyMap.set(issueKey, row);
     }
   }
-  return null;
+
+  return issueKeyMap;
 }
 
 // Helper function to update row with new data
 async function updateRow(row: any, data: Partial<RowOut>) {
   if (data.planStartAt !== undefined) {
-    row.set("F", formatDateYYYYMMDD(data.planStartAt));
-  }
-  if (data.dueDate !== undefined) {
-    row.set("G", formatDateYYYYMMDD(data.dueDate));
-  }
-  if (data.actualStartAt !== undefined) {
-    row.set("H", formatDateYYYYMMDD(data.actualStartAt));
-  }
-  if (data.actualEndAt !== undefined) {
-    row.set("I", formatDateYYYYMMDD(data.actualEndAt));
-  }
-  if (data.assignee !== undefined) {
-    row.set("K", extractUsernameFromEmail(data.assignee));
-  }
-  if (data.status !== undefined) {
-    row.set("M", data.status);
-  }
-  if (data.percentDone !== undefined) {
-    row.set("L", data.percentDone);
-  }
-  if (data.syncedAt !== undefined) {
-    row.set("P", formatDateTimeYYYYMMDDHHMM(data.syncedAt));
+    row.set("Plan Start", formatDateYYYYMMDD(data.planStartAt));
   }
 
-  await row.save();
+  if (data.dueDate !== undefined) {
+    row.set("Plan End", formatDateYYYYMMDD(data.dueDate));
+  }
+
+  if (data.actualStartAt !== undefined) {
+    row.set("Actual Start", formatDateYYYYMMDD(data.actualStartAt));
+  }
+
+  if (data.actualEndAt !== undefined) {
+    row.set("Actual End", formatDateYYYYMMDD(data.actualEndAt));
+  }
+
+  if (data.assignee !== undefined) {
+    row.set("Pic", extractUsernameFromEmail(data.assignee));
+  }
+
+  if (data.status !== undefined) {
+    row.set("Status", data.status);
+  }
+
+  // if (data.percentDone !== undefined) {
+  //   row.set("Progress (%)", data.percentDone);
+  // }
+
+  if (data.syncedAt !== undefined) {
+    row.set("Last Sync", formatDateTimeYYYYMMDDHHMM(data.syncedAt));
+  }
+
+  // Use rate limiter and retry for saving
+  await rateLimiter.execute(async () => {
+    return await retryManager.execute(async () => {
+      return await row.save();
+    });
+  });
 }
 
 async function openDoc() {
-  // OAuth2 configuration
-  const oauth2Client = new OAuth2Client(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    process.env.GOOGLE_REDIRECT_URI || "http://localhost:3000/oauth2callback"
-  );
-
-  // Set credentials from environment variables or token file
-  const accessToken = process.env.GOOGLE_ACCESS_TOKEN;
-  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
-
-  if (accessToken && refreshToken) {
-    oauth2Client.setCredentials({
-      access_token: accessToken,
-      refresh_token: refreshToken,
-    });
-  } else {
-    throw new Error(
-      "Google OAuth2 credentials not found. Please set GOOGLE_ACCESS_TOKEN and GOOGLE_REFRESH_TOKEN environment variables."
-    );
-  }
+  // Use GoogleOAuth2Manager for authentication
+  const oauthManager = new GoogleOAuth2Manager();
+  const oauth2Client = await oauthManager.getAuthenticatedClient();
 
   const doc = new GoogleSpreadsheet(process.env.GOOGLE_SHEET_ID!, oauth2Client);
 
-  await doc.loadInfo();
-  return doc;
-}
+  // Use retry mechanism for loading document info
+  await retryManager.execute(async () => {
+    return await doc.loadInfo();
+  });
 
-async function ensureSheet(
-  doc: GoogleSpreadsheet,
-  title: string,
-  headers: string[]
-) {
-  const sheet =
-    doc.sheetsByTitle[title] ||
-    (await doc.addSheet({ title, headerValues: headers }));
-  if (!sheet.headerValues?.length) await sheet.setHeaderRow(headers);
-  return sheet;
+  return doc;
 }
 
 export async function appendToSheetIdempotent(rows: RowOut[]) {
@@ -129,54 +164,28 @@ export async function appendToSheetIdempotent(rows: RowOut[]) {
   const doc = await openDoc();
   const mainName = process.env.GOOGLE_SHEET_TAB || "Data";
 
-  // Define headers for the new column structure
-  const headers = [
-    "A",
-    "B",
-    "C",
-    "D",
-    "E", // A-E columns
-    "F", // planStartAt
-    "G", // dueDate
-    "H", // actualStartAt
-    "I", // actualEndAt
-    "J", // J column
-    "K", // assignee
-    "L", // percentDone
-    "M", // issueKey (primary key) + status
-    "N",
-    "O", // N-O columns
-    "P", // syncedAt
-  ];
+  const sheet = doc.sheetsByTitle[mainName];
 
-  const main = await ensureSheet(doc, mainName, headers);
+  if (!sheet) throw new Error(`Sheet ${mainName} not found`);
 
-  let written = 0;
+  // Load sheet headers to understand column structure
+  await sheet.loadHeaderRow();
+
+  // Create a map of existing rows by issueKey for efficient lookup
+  const issueKeyMap = await createIssueKeyMap(sheet);
+
   let updated = 0;
 
+  // Process rows sequentially to avoid overwhelming the API
   for (const row of rows) {
-    // Try to find existing row by issueKey in column M
-    const existingRow = await findRowByIssueKey(main, row.issueKey);
+    const existingRow = issueKeyMap.get(row.issueKey);
 
     if (existingRow) {
-      // Update existing row
+      // Update existing row with rate limiting
       await updateRow(existingRow, row);
       updated++;
-    } else {
-      // Add new row
-      await main.addRow({
-        M: row.issueKey, // Primary key in column M
-        F: formatDateYYYYMMDD(row.planStartAt),
-        G: formatDateYYYYMMDD(row.dueDate),
-        H: formatDateYYYYMMDD(row.actualStartAt),
-        I: formatDateYYYYMMDD(row.actualEndAt),
-        K: extractUsernameFromEmail(row.assignee),
-        L: row.percentDone,
-        P: formatDateTimeYYYYMMDDHHMM(row.syncedAt),
-      });
-      written++;
     }
   }
 
-  return { written, updated };
+  return { updated };
 }

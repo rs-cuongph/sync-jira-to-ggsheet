@@ -1,6 +1,6 @@
 import { fetchCsvText } from "./csv.js";
 import { mapRows } from "./mapping.js";
-// import { appendToSheet } from "./sheets.ts";
+import { appendToSheetIdempotent } from "./sheets.js";
 
 export async function runSync() {
   const csvText = await fetchCsvText();
@@ -9,6 +9,6 @@ export async function runSync() {
     console.log("[sync] no rows parsed");
     return;
   }
-  console.log(rows);
-  //   await appendToSheet(rows); // đẩy lên Google Sheet
+  const { updated } = await appendToSheetIdempotent(rows); // đẩy lên Google Sheet
+  console.log(`[sync] updated ${updated} rows`);
 }

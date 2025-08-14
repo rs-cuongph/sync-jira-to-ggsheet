@@ -12,7 +12,8 @@
     "start": "node dist/cron.js",
     "run-once": "node dist/sync.js",
     "setup": "tsx src/auth-cli.ts setup",
-    "auth": "tsx src/auth-cli.ts auth"
+    "auth": "tsx src/auth-cli.ts auth",
+    "cookie": "tsx src/cookie-cli.ts"
   },
   "repository": {
     "type": "git",
@@ -33,6 +34,7 @@
     "googleapis": "^156.0.0",
     "node-cron": "^4.2.1",
     "papaparse": "^5.5.3",
+    "playwright": "^1.54.2",
     "undici": "^7.13.0"
   },
   "devDependencies": {

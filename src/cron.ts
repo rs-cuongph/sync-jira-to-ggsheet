@@ -15,7 +15,7 @@ import { runSync } from "./sync.js";
 //   }
 // });
 
-// // Cho phép chạy foreground khi dev
+// Cho phép chạy foreground khi dev
 if (process.env.NODE_ENV !== "production") {
   console.log("[cron] dev mode: running once immediately...");
   runSync().catch(console.error);

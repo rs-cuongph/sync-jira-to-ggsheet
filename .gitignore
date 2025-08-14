@@ -9,4 +9,10 @@ dist
 # OAuth2 tokens
 token.json
 *.token
+jira-cookie.json
+
+# Playwright
+test-results/
+playwright-report/
+playwright/.cache/
 
