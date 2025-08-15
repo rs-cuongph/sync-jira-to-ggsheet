@@ -2,6 +2,8 @@ import { fetchCsvText } from "./csv.js";
 import { mapRows } from "./mapping.js";
 import { appendToSheetIdempotent } from "./sheets.js";
 
+const sheets = ["WBS_DEV", "WBS_QC"];
+
 export async function runSync() {
   const csvText = await fetchCsvText();
   const rows = mapRows(csvText); // chuyển CSV → mảng object đã map
@@ -9,6 +11,11 @@ export async function runSync() {
     console.log("[sync] no rows parsed");
     return;
   }
-  const { updated } = await appendToSheetIdempotent(rows); // đẩy lên Google Sheet
-  console.log(`[sync] updated ${updated} rows`);
+
+  for (const sheet of sheets) {
+    const { updated } = await appendToSheetIdempotent(rows, sheet); // đẩy lên Google Sheet
+    console.log(`[sync] updated ${updated} rows to ${sheet}`);
+  }
+
+  return { success: true };
 }

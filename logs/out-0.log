@@ -1,0 +1,6 @@
+2025-08-15 15:37:11 +07:00: [dotenv@17.2.1] injecting env (0) from .env -- tip: 📡 observe env with Radar: https://dotenvx.com/radar
+2025-08-15 15:37:13 +07:00: [cron] scheduling: 0 9,17 * * *
+2025-08-15 15:38:42 +07:00: [dotenv@17.2.1] injecting env (0) from .env -- tip: ⚙️  write to custom object with { processEnv: myObject }
+2025-08-15 15:38:43 +07:00: [cron] scheduling: 0 9,17 * * *
+2025-08-15 15:55:34 +07:00: [dotenv@17.2.1] injecting env (0) from .env -- tip: ⚙️  write to custom object with { processEnv: myObject }
+2025-08-15 15:55:35 +07:00: [cron] scheduling: 0 9,17 * * *

@@ -85,10 +85,11 @@ async function createIssueKeyMap(
     if (lastSync) {
       const syncedAt = formatDateTimeYYYYMMDDHHMM(lastSync);
       const syncedAtDate = dayjs(syncedAt);
+      const now = dayjs();
       // kiểm tra nếu last sync cách hôm nay 1 giờ thì có thể update
       canUpdate =
         syncedAtDate.isValid() &&
-        syncedAtDate.isAfter(dayjs().subtract(1, "hour"));
+        syncedAtDate.isBefore(now.subtract(1, "hour"));
     } else {
       canUpdate = true;
     }
@@ -127,9 +128,15 @@ async function updateRow(row: any, data: Partial<RowOut>) {
     row.set("Status", data.status);
   }
 
-  // if (data.percentDone !== undefined) {
-  //   row.set("Progress (%)", data.percentDone);
-  // }
+  if (data.status === "Resolved") {
+    row.set("Progress (%)", 100);
+  } else if (data.status === "In Review") {
+    row.set("Progress (%)", 80);
+  } else if (data.status === "In Progress") {
+    if (data.percentDone !== undefined) {
+      row.set("Progress (%)", data.percentDone ?? 0);
+    }
+  }
 
   if (data.syncedAt !== undefined) {
     row.set("Last Sync", formatDateTimeYYYYMMDDHHMM(data.syncedAt));
@@ -158,15 +165,17 @@ async function openDoc() {
   return doc;
 }
 
-export async function appendToSheetIdempotent(rows: RowOut[]) {
-  if (!rows.length) return { written: 0, updated: 0 };
+export async function appendToSheetIdempotent(
+  rows: RowOut[],
+  sheetName: string
+) {
+  if (!rows.length || !sheetName) return { written: 0, updated: 0 };
 
   const doc = await openDoc();
-  const mainName = process.env.GOOGLE_SHEET_TAB || "Data";
 
-  const sheet = doc.sheetsByTitle[mainName];
+  const sheet = doc.sheetsByTitle[sheetName];
 
-  if (!sheet) throw new Error(`Sheet ${mainName} not found`);
+  if (!sheet) throw new Error(`Sheet ${sheetName} not found`);
 
   // Load sheet headers to understand column structure
   await sheet.loadHeaderRow();

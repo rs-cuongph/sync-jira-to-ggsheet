@@ -3,7 +3,6 @@ import { CookieManager } from "./cookie-manager.js";
 
 export async function fetchCsvText(): Promise<string> {
   const url = process.env.CSV_URL!;
-  console.log("url", url);
 
   const cookieManager = new CookieManager();
   let cookie: string | null = null;
