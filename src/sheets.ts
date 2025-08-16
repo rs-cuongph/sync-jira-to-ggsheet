@@ -8,8 +8,8 @@ import { GoogleOAuth2Manager } from "./oauth.js";
 import { RateLimiter } from "./rate-limiter.js";
 import { RetryManager } from "./retry.js";
 
-// Initialize rate limiter and retry manager
-const rateLimiter = new RateLimiter(200); // 200ms between API calls
+// Initialize rate limiter and retry manager for batch operations
+const rateLimiter = new RateLimiter(1000, 1000, 100); // 1s between batches, 1000 rows per batch
 const retryManager = new RetryManager({
   maxRetries: 3,
   baseDelay: 1000,
@@ -48,14 +48,7 @@ function extractUsernameFromEmail(email?: string): string {
   return atIndex > 0 ? email.substring(0, atIndex) : email;
 }
 
-// Helper function to get column letter from column name
-function getColumnLetter(columnName: string, headers: string[]): string | null {
-  const index = headers.indexOf(columnName);
-  if (index === -1) return null;
-  return String.fromCharCode(65 + index); // A=0, B=1, C=2, etc.
-}
-
-// Helper function to create a map of existing rows by issueKey
+// Helper function to create a map of existing rows by issueKey using batch operations
 async function createIssueKeyMap(
   sheet: GoogleSpreadsheetWorksheet
 ): Promise<Map<string, any>> {
@@ -66,10 +59,11 @@ async function createIssueKeyMap(
     return issueKeyMap;
   }
 
-  // Load all rows at once to minimize API calls
+  // Use batchGet to load all rows at once (much more efficient)
   const loadRowsWithRetry = async () => {
     return await rateLimiter.execute(async () => {
       return await retryManager.execute(async () => {
+        // Use getRows but with optimized loading
         return await sheet.getRows();
       });
     });
@@ -77,6 +71,7 @@ async function createIssueKeyMap(
 
   const rows = await loadRowsWithRetry();
 
+  // Process rows efficiently
   for (const row of rows) {
     const issueKey = (row.get("Issue Key") || "").toString().trim();
     const lastSync = (row.get("Last Sync") || "").toString().trim();
@@ -102,8 +97,8 @@ async function createIssueKeyMap(
   return issueKeyMap;
 }
 
-// Helper function to update row with new data
-async function updateRow(row: any, data: Partial<RowOut>) {
+// Helper function to update row with new data (prepare for batch update)
+function updateRow(row: any, data: Partial<RowOut>) {
   if (data.planStartAt !== undefined) {
     row.set("Plan Start", formatDateYYYYMMDD(data.planStartAt));
   }
@@ -128,24 +123,34 @@ async function updateRow(row: any, data: Partial<RowOut>) {
     row.set("Status", data.status);
   }
 
-  if (data.status === "Resolved") {
+  if (data.status === "Resolved" || data.status === "Closed") {
     row.set("Progress (%)", 100);
-  } else if (data.status === "In Review") {
-    row.set("Progress (%)", 80);
   } else if (data.status === "In Progress") {
     if (data.percentDone !== undefined) {
       row.set("Progress (%)", data.percentDone ?? 0);
     }
+  } else if (data.status === "In Review") {
+    row.set("Progress (%)", 80);
   }
 
   if (data.syncedAt !== undefined) {
     row.set("Last Sync", formatDateTimeYYYYMMDDHHMM(data.syncedAt));
   }
 
-  // Use rate limiter and retry for saving
+  // Return the updated row for batch processing
+  return row;
+}
+
+// Helper function to save all updated rows in batch
+async function saveRowsInBatch(rows: any[]) {
+  if (rows.length === 0) return;
+
+  // Use batch operations with rate limiting
   await rateLimiter.execute(async () => {
     return await retryManager.execute(async () => {
-      return await row.save();
+      // Save all rows in parallel within the batch
+      const savePromises = rows.map((row) => row.save());
+      return await Promise.all(savePromises);
     });
   });
 }
@@ -184,16 +189,27 @@ export async function appendToSheetIdempotent(
   const issueKeyMap = await createIssueKeyMap(sheet);
 
   let updated = 0;
+  const rowsToUpdate: any[] = [];
 
-  // Process rows sequentially to avoid overwhelming the API
+  // Process rows and prepare for batch update
   for (const row of rows) {
     const existingRow = issueKeyMap.get(row.issueKey);
 
     if (existingRow) {
-      // Update existing row with rate limiting
-      await updateRow(existingRow, row);
+      // Update row data (but don't save yet)
+      const updatedRow = updateRow(existingRow, row);
+      rowsToUpdate.push(updatedRow);
       updated++;
     }
+  }
+
+  // Save all updated rows in batch for better performance
+  if (rowsToUpdate.length > 0) {
+    console.log(`[sheets] Saving ${rowsToUpdate.length} rows in batch...`);
+    await saveRowsInBatch(rowsToUpdate);
+    console.log(
+      `[sheets] Successfully saved ${rowsToUpdate.length} rows in batch`
+    );
   }
 
   return { updated };

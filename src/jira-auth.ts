@@ -33,7 +33,7 @@ export class JiraAuthenticator {
 
   private async initialize(): Promise<void> {
     this.browser = await chromium.launch({
-      headless: true,
+      headless: false,
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
 
@@ -56,6 +56,8 @@ export class JiraAuthenticator {
     await this.page
       .getByRole("textbox", { name: "Password" })
       .fill(credentials.password);
+
+    await this.page.getByText("Remember my login on this").click();
 
     await this.page.getByRole("button", { name: "Log In" }).click();
 

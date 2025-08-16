@@ -11,7 +11,7 @@ export async function fetchCsvText(): Promise<string> {
     cookie = await cookieManager.getCookie();
   } catch (error) {
     console.error("❌ Failed to get Jira session cookie:", error);
-    console.log("⚠️ Proceeding without authentication cookie");
+    throw error;
   }
 
   const headers: Record<string, string> = {};
