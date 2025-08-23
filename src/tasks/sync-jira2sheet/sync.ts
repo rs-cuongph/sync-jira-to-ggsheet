@@ -1,10 +1,10 @@
 import { fetchCsvText } from "./csv.js";
-import { mapRows } from "./mapping.js";
+import { mapRows } from "../../utils/jira/mapping.js";
 import { appendToSheetIdempotent } from "./sheets.js";
 
 const sheets = ["WBS_DEV", "WBS_QC"];
 
-export async function runSync() {
+export async function syncJira2Sheet() {
   const csvText = await fetchCsvText();
   const rows = mapRows(csvText); // chuyển CSV → mảng object đã map
   if (!rows.length) {

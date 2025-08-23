@@ -1,5 +1,5 @@
 import { fetch } from "undici";
-import { CookieManager } from "./cookie-manager.js";
+import { CookieManager } from "../../utils/jira/cookie-manager.js";
 
 export async function fetchCsvText(): Promise<string> {
   const url = process.env.CSV_URL!;
@@ -23,6 +23,7 @@ export async function fetchCsvText(): Promise<string> {
   const res = await fetch(url, { headers });
   if (!res.ok) {
     const body = await res.text();
+    clearJiraCookie();
     throw new Error(`Download failed ${res.status}: ${body.slice(0, 200)}`);
   }
 

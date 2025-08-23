@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
-import { generateTokens, exchangeCodeForTokens } from "./oauth.js";
+import {
+  generateTokens,
+  exchangeCodeForTokens,
+} from "./utils/ggsheet/oauth.js";
 
 async function main() {
   const command = process.argv[2];

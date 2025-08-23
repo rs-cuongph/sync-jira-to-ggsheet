@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { config } from "dotenv";
-import { CookieManager } from "./cookie-manager.js";
+import { CookieManager } from "./utils/jira/cookie-manager.js";
 
 config();
 

@@ -3,10 +3,10 @@ import {
   GoogleSpreadsheetWorksheet,
 } from "google-spreadsheet";
 import dayjs from "dayjs";
-import type { RowOut } from "./mapping.js";
-import { GoogleOAuth2Manager } from "./oauth.js";
-import { RateLimiter } from "./rate-limiter.js";
-import { RetryManager } from "./retry.js";
+import type { RowOut } from "../../utils/jira/mapping.js";
+import { GoogleOAuth2Manager } from "../../utils/ggsheet/oauth.js";
+import { RateLimiter } from "../../utils/rate-limiter.js";
+import { RetryManager } from "../../utils/retry.js";
 
 // Initialize rate limiter and retry manager for batch operations
 const rateLimiter = new RateLimiter(1000, 1000, 100); // 1s between batches, 1000 rows per batch
@@ -74,8 +74,13 @@ async function createIssueKeyMap(
   // Process rows efficiently
   for (const row of rows) {
     const issueKey = (row.get("Issue Key") || "").toString().trim();
+    const status = (row.get("Status") || "").toString().trim();
     const lastSync = (row.get("Last Sync") || "").toString().trim();
     let canUpdate = false;
+
+    if (status === "Closed") {
+      continue;
+    }
 
     if (lastSync) {
       const syncedAt = formatDateTimeYYYYMMDDHHMM(lastSync);
