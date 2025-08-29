@@ -15,4 +15,4 @@ jira-cookie.json
 test-results/
 playwright-report/
 playwright/.cache/
-
+logs/

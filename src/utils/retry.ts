@@ -1,9 +1,12 @@
+import { GoogleAPIErrorHandler } from './ggsheet/google-api-error-handler.js';
+
 export interface RetryOptions {
   maxRetries?: number;
   baseDelay?: number;
   maxDelay?: number;
   backoffMultiplier?: number;
   shouldRetry?: (error: any) => boolean;
+  jitter?: boolean;
 }
 
 export class RetryManager {
@@ -16,6 +19,7 @@ export class RetryManager {
       maxDelay: options.maxDelay ?? 30000,
       backoffMultiplier: options.backoffMultiplier ?? 2,
       shouldRetry: options.shouldRetry ?? this.defaultShouldRetry,
+      jitter: options.jitter ?? true,
     };
   }
 
@@ -26,22 +30,57 @@ export class RetryManager {
     for (let attempt = 0; attempt <= this.options.maxRetries; attempt++) {
       try {
         return await fn();
-      } catch (error) {
+      } catch (error: any) {
         lastError = error;
 
         if (
           attempt === this.options.maxRetries ||
           !this.options.shouldRetry(error)
         ) {
+          console.error(`[RetryManager] Final attempt ${attempt + 1} failed:`, {
+            error: (error as any).message || error,
+            status: (error as any).status,
+            code: (error as any).code,
+            attempt,
+            maxRetries: this.options.maxRetries
+          });
           throw error;
         }
 
-        console.log(`Attempt ${attempt + 1} failed, retrying in ${delay}ms...`);
-        await this.delay(delay);
-        delay = Math.min(
-          delay * this.options.backoffMultiplier,
-          this.options.maxDelay
-        );
+        // Use Google API error handler for better delay calculation
+        const errorStrategy = GoogleAPIErrorHandler.classifyError(error);
+        if (errorStrategy.shouldRetry) {
+          delay = GoogleAPIErrorHandler.calculateRetryDelay(
+            errorStrategy.retryDelay,
+            attempt + 1,
+            errorStrategy.backoffMultiplier,
+            this.options.maxDelay
+          );
+        } else {
+          // Fall back to default exponential backoff
+          delay = Math.min(
+            delay * this.options.backoffMultiplier,
+            this.options.maxDelay
+          );
+        }
+
+        // Add jitter to prevent thundering herd
+        const jitteredDelay = this.options.jitter 
+          ? delay + Math.random() * delay * 0.1 
+          : delay;
+
+        console.log(`[RetryManager] Attempt ${attempt + 1} failed, retrying in ${Math.round(jitteredDelay)}ms...`, {
+          error: (error as any).message || error,
+          status: (error as any).status,
+          code: (error as any).code,
+          attempt,
+          maxRetries: this.options.maxRetries,
+          errorType: errorStrategy.isQuotaError ? 'QUOTA_ERROR' : 
+                    errorStrategy.isRateLimitError ? 'RATE_LIMIT_ERROR' : 
+                    errorStrategy.isTransientError ? 'TRANSIENT_ERROR' : 'UNKNOWN'
+        });
+
+        await this.delay(jitteredDelay);
       }
     }
 
@@ -49,21 +88,8 @@ export class RetryManager {
   }
 
   private defaultShouldRetry(error: any): boolean {
-    // Retry on 429 (rate limit) and 5xx errors
-    if (error.code === 429) {
-      return true;
-    }
-
-    if (error.status >= 500 && error.status < 600) {
-      return true;
-    }
-
-    // Retry on network errors
-    if (error.code === "ECONNRESET" || error.code === "ETIMEDOUT") {
-      return true;
-    }
-
-    return false;
+    // Use Google API error handler for classification
+    return GoogleAPIErrorHandler.isRecoverable(error);
   }
 
   private delay(ms: number): Promise<void> {

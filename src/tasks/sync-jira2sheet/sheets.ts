@@ -7,15 +7,19 @@ import type { RowOut } from "../../utils/jira/mapping.js";
 import { GoogleOAuth2Manager } from "../../utils/ggsheet/oauth.js";
 import { RateLimiter } from "../../utils/rate-limiter.js";
 import { RetryManager } from "../../utils/retry.js";
+import { GoogleAPIErrorHandler } from "../../utils/ggsheet/google-api-error-handler.js";
+import { GoogleAPIQuotaMonitor } from "../../utils/ggsheet/quota-monitor.js";
 
-// Initialize rate limiter and retry manager for batch operations
+// Initialize rate limiter, retry manager, and quota monitor for batch operations
 const rateLimiter = new RateLimiter(1000, 1000, 100); // 1s between batches, 1000 rows per batch
 const retryManager = new RetryManager({
-  maxRetries: 3,
-  baseDelay: 1000,
-  maxDelay: 30000,
+  maxRetries: 5, // Increased from 3 to 5 for quota errors
+  baseDelay: 2000, // Increased from 1s to 2s base delay
+  maxDelay: 60000, // Increased from 30s to 60s max delay
   backoffMultiplier: 2,
+  jitter: true, // Enable jitter to prevent thundering herd
 });
+const quotaMonitor = new GoogleAPIQuotaMonitor();
 
 // Helper function to format date as YYYY/MM/DD
 function formatDateYYYYMMDD(dateString?: string): string {
@@ -150,14 +154,73 @@ function updateRow(row: any, data: Partial<RowOut>) {
 async function saveRowsInBatch(rows: any[]) {
   if (rows.length === 0) return;
 
-  // Use batch operations with rate limiting
-  await rateLimiter.execute(async () => {
-    return await retryManager.execute(async () => {
-      // Save all rows in parallel within the batch
-      const savePromises = rows.map((row) => row.save());
-      return await Promise.all(savePromises);
-    });
-  });
+  console.log(`[sheets] Starting batch save of ${rows.length} rows...`);
+  
+  // Use smaller batch sizes to avoid overwhelming Google API
+  const batchSize = 50; // Reduced from 1000 to 50 for better quota management
+  
+  for (let i = 0; i < rows.length; i += batchSize) {
+    const batch = rows.slice(i, i + batchSize);
+    const batchNumber = Math.floor(i / batchSize) + 1;
+    const totalBatches = Math.ceil(rows.length / batchSize);
+    
+    console.log(`[sheets] Processing batch ${batchNumber}/${totalBatches} with ${batch.length} rows...`);
+    
+    try {
+      // Use batch operations with rate limiting
+      await rateLimiter.execute(async () => {
+        return await retryManager.execute(async () => {
+          // Save all rows in parallel within the batch
+          const savePromises = batch.map((row) => row.save());
+          return await Promise.all(savePromises);
+        });
+      });
+      
+      console.log(`[sheets] Successfully saved batch ${batchNumber}/${totalBatches}`);
+      
+      // Add small delay between batches to be respectful to Google API
+      if (i + batchSize < rows.length) {
+        console.log(`[sheets] Waiting 2 seconds before next batch...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+      
+    } catch (error: any) {
+      // Use Google API error handler for better error classification and logging
+      GoogleAPIErrorHandler.logError(error, 'sheets');
+      
+      // Record quota error for monitoring
+      if (error.status === 429 || error.code === 429 || 
+          (error.message && error.message.toLowerCase().includes('quota'))) {
+        quotaMonitor.recordQuotaError(error, 'sheets');
+        
+        // Check if we should pause operations
+        if (quotaMonitor.shouldPauseOperations()) {
+          const pauseDuration = quotaMonitor.getRecommendedPauseDuration();
+          console.warn(`[sheets] QUOTA EXHAUSTED - Pausing operations for ${Math.round(pauseDuration / 1000 / 60)} minutes`);
+          console.warn(`[sheets] Estimated quota reset time: ${quotaMonitor.analyzeQuotaStatus().estimatedResetTime?.toISOString()}`);
+        }
+      }
+      
+      console.error(`[sheets] Error saving batch ${batchNumber}/${totalBatches}:`, {
+        error: error.message || error,
+        status: error.status,
+        code: error.code,
+        batchSize: batch.length,
+        remainingRows: rows.length - i
+      });
+      
+      // Log rate limiter status for debugging
+      console.log(`[sheets] Rate limiter status:`, rateLimiter.getStatus());
+      
+      // Log quota monitor status
+      console.log(`[sheets] Quota monitor status:`, quotaMonitor.getStats());
+      
+      // Re-throw error to be handled by caller
+      throw error;
+    }
+  }
+  
+  console.log(`[sheets] Completed batch save of all ${rows.length} rows`);
 }
 
 async function openDoc() {

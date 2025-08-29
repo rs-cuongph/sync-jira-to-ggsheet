@@ -5,6 +5,9 @@ export class RateLimiter {
   private minInterval: number;
   private batchSize: number;
   private batchDelay: number;
+  private consecutiveErrors = 0;
+  private maxConsecutiveErrors = 3;
+  private baseInterval: number;
 
   constructor(
     minIntervalMs: number = 1000, // 1 second between batch API calls
@@ -12,6 +15,7 @@ export class RateLimiter {
     batchDelay: number = 100 // 100ms between operations within batch
   ) {
     this.minInterval = minIntervalMs;
+    this.baseInterval = minIntervalMs;
     this.batchSize = batchSize;
     this.batchDelay = batchDelay;
   }
@@ -24,14 +28,41 @@ export class RateLimiter {
       this.queue.push(async () => {
         try {
           const result = await fn();
+          // Reset error counter on success
+          this.consecutiveErrors = 0;
+          this.minInterval = this.baseInterval;
           resolve(result);
         } catch (error) {
+          this.handleError(error);
           reject(error);
         }
       });
 
       this.processQueue();
     });
+  }
+
+  /**
+   * Handle errors and implement exponential backoff for quota errors
+   */
+  private handleError(error: any): void {
+    this.consecutiveErrors++;
+    
+    // Check if it's a Google API quota error
+    if (error.status === 429 || error.code === 429 || 
+        (error.message && error.message.toLowerCase().includes('quota'))) {
+      
+      console.log(`[RateLimiter] Google API quota error detected (attempt ${this.consecutiveErrors})`);
+      
+      // Implement exponential backoff for quota errors
+      if (this.consecutiveErrors <= this.maxConsecutiveErrors) {
+        const backoffMultiplier = Math.pow(2, this.consecutiveErrors - 1);
+        const newInterval = Math.min(this.baseInterval * backoffMultiplier, 60000); // Max 1 minute
+        
+        console.log(`[RateLimiter] Increasing interval from ${this.minInterval}ms to ${newInterval}ms due to quota error`);
+        this.minInterval = newInterval;
+      }
+    }
   }
 
   /**
@@ -115,7 +146,9 @@ export class RateLimiter {
       const timeSinceLastCall = now - this.lastCallTime;
 
       if (timeSinceLastCall < this.minInterval) {
-        await this.delay(this.minInterval - timeSinceLastCall);
+        const waitTime = this.minInterval - timeSinceLastCall;
+        console.log(`[RateLimiter] Waiting ${waitTime}ms before next API call (quota protection)`);
+        await this.delay(waitTime);
       }
 
       const task = this.queue.shift();
@@ -130,5 +163,18 @@ export class RateLimiter {
 
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Get current rate limiting status
+   */
+  getStatus() {
+    return {
+      queueLength: this.queue.length,
+      processing: this.processing,
+      minInterval: this.minInterval,
+      consecutiveErrors: this.consecutiveErrors,
+      lastCallTime: this.lastCallTime
+    };
   }
 }
