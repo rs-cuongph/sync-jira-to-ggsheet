@@ -18,6 +18,7 @@ export type RowOut = {
   planStartAt?: string; // ISO (custom)
   syncedAt: string; // ISO (thời điểm đồng bộ)
   percentDone: number; // Custom field (% Done)
+  timeSpentSec: number; // Custom field (Time Spent)
 };
 
 // --- helpers -------------------------------------------------------------
@@ -190,6 +191,7 @@ export function mapRows(csvText: string): RowOut[] {
 
     const remainingEstimateSec = parseJiraDuration(r["Remaining Estimate"]);
     const originalEstimateSec = parseJiraDuration(r["Original Estimate"]);
+    const timeSpentSec = parseJiraDuration(r["Time Spent"]);
     const percentDone = Number(
       (r["Custom field (% Done)"]?.toString().replace("%", "") || "0").trim()
     );
@@ -207,6 +209,7 @@ export function mapRows(csvText: string): RowOut[] {
       originalEstimateSec,
       syncedAt: now,
       percentDone,
+      timeSpentSec,
     };
 
     // Add optional properties only when they have values

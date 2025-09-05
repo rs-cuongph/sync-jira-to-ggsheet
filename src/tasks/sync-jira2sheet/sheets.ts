@@ -54,7 +54,8 @@ function extractUsernameFromEmail(email?: string): string {
 
 // Helper function to create a map of existing rows by issueKey using batch operations
 async function createIssueKeyMap(
-  sheet: GoogleSpreadsheetWorksheet
+  sheet: GoogleSpreadsheetWorksheet,
+  isSyncEstimateAndTimeSpent: boolean = false
 ): Promise<Map<string, any>> {
   const issueKeyMap = new Map<string, any>();
 
@@ -82,11 +83,11 @@ async function createIssueKeyMap(
     const lastSync = (row.get("Last Sync") || "").toString().trim();
     let canUpdate = false;
 
-    if (status === "Closed") {
+    if (status === "Closed" && !isSyncEstimateAndTimeSpent) {
       continue;
     }
 
-    if (lastSync) {
+    if (lastSync && !isSyncEstimateAndTimeSpent) {
       const syncedAt = formatDateTimeYYYYMMDDHHMM(lastSync);
       const syncedAtDate = dayjs(syncedAt);
       const now = dayjs();
@@ -107,39 +108,51 @@ async function createIssueKeyMap(
 }
 
 // Helper function to update row with new data (prepare for batch update)
-function updateRow(row: any, data: Partial<RowOut>) {
-  if (data.planStartAt !== undefined) {
-    row.set("Plan Start", formatDateYYYYMMDD(data.planStartAt));
-  }
-
-  if (data.dueDate !== undefined) {
-    row.set("Plan End", formatDateYYYYMMDD(data.dueDate));
-  }
-
-  if (data.actualStartAt !== undefined) {
-    row.set("Actual Start", formatDateYYYYMMDD(data.actualStartAt));
-  }
-
-  if (data.actualEndAt !== undefined) {
-    row.set("Actual End", formatDateYYYYMMDD(data.actualEndAt));
-  }
-
-  if (data.assignee !== undefined) {
-    row.set("Pic", extractUsernameFromEmail(data.assignee));
-  }
-
-  if (data.status !== undefined) {
-    row.set("Status", data.status);
-  }
-
-  if (data.status === "Resolved" || data.status === "Closed") {
-    row.set("Progress (%)", 100);
-  } else if (data.status === "In Progress") {
-    if (data.percentDone !== undefined) {
-      row.set("Progress (%)", data.percentDone ?? 0);
+function updateRow(
+  row: any,
+  data: Partial<RowOut>,
+  isSyncEstimateAndTimeSpent: boolean = false
+) {
+  if (isSyncEstimateAndTimeSpent) {
+    row.set(
+      "Original Estimate",
+      data.originalEstimateSec ? data.originalEstimateSec / 3600 : 0
+    );
+    row.set("Time Spent", data.timeSpentSec ? data.timeSpentSec / 3600 : 0);
+  } else {
+    if (data.planStartAt !== undefined) {
+      row.set("Plan Start", formatDateYYYYMMDD(data.planStartAt));
     }
-  } else if (data.status === "In Review") {
-    row.set("Progress (%)", 80);
+
+    if (data.dueDate !== undefined) {
+      row.set("Plan End", formatDateYYYYMMDD(data.dueDate));
+    }
+
+    if (data.actualStartAt !== undefined) {
+      row.set("Actual Start", formatDateYYYYMMDD(data.actualStartAt));
+    }
+
+    if (data.actualEndAt !== undefined) {
+      row.set("Actual End", formatDateYYYYMMDD(data.actualEndAt));
+    }
+
+    if (data.assignee !== undefined) {
+      row.set("Pic", extractUsernameFromEmail(data.assignee));
+    }
+
+    if (data.status !== undefined) {
+      row.set("Status", data.status);
+    }
+
+    if (data.status === "Resolved" || data.status === "Closed") {
+      row.set("Progress (%)", 100);
+    } else if (data.status === "In Progress") {
+      if (data.percentDone !== undefined) {
+        row.set("Progress (%)", data.percentDone ?? 0);
+      }
+    } else if (data.status === "In Review") {
+      row.set("Progress (%)", 80);
+    }
   }
 
   if (data.syncedAt !== undefined) {
@@ -155,17 +168,19 @@ async function saveRowsInBatch(rows: any[]) {
   if (rows.length === 0) return;
 
   console.log(`[sheets] Starting batch save of ${rows.length} rows...`);
-  
+
   // Use smaller batch sizes to avoid overwhelming Google API
-  const batchSize = 50; // Reduced from 1000 to 50 for better quota management
-  
+  const batchSize = 20; // Reduced from 1000 to 50 for better quota management
+
   for (let i = 0; i < rows.length; i += batchSize) {
     const batch = rows.slice(i, i + batchSize);
     const batchNumber = Math.floor(i / batchSize) + 1;
     const totalBatches = Math.ceil(rows.length / batchSize);
-    
-    console.log(`[sheets] Processing batch ${batchNumber}/${totalBatches} with ${batch.length} rows...`);
-    
+
+    console.log(
+      `[sheets] Processing batch ${batchNumber}/${totalBatches} with ${batch.length} rows...`
+    );
+
     try {
       // Use batch operations with rate limiting
       await rateLimiter.execute(async () => {
@@ -175,51 +190,66 @@ async function saveRowsInBatch(rows: any[]) {
           return await Promise.all(savePromises);
         });
       });
-      
-      console.log(`[sheets] Successfully saved batch ${batchNumber}/${totalBatches}`);
-      
+
+      console.log(
+        `[sheets] Successfully saved batch ${batchNumber}/${totalBatches}`
+      );
+
       // Add small delay between batches to be respectful to Google API
       if (i + batchSize < rows.length) {
         console.log(`[sheets] Waiting 2 seconds before next batch...`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise((resolve) => setTimeout(resolve, 2000));
       }
-      
     } catch (error: any) {
       // Use Google API error handler for better error classification and logging
-      GoogleAPIErrorHandler.logError(error, 'sheets');
-      
+      GoogleAPIErrorHandler.logError(error, "sheets");
+
       // Record quota error for monitoring
-      if (error.status === 429 || error.code === 429 || 
-          (error.message && error.message.toLowerCase().includes('quota'))) {
-        quotaMonitor.recordQuotaError(error, 'sheets');
-        
+      if (
+        error.status === 429 ||
+        error.code === 429 ||
+        (error.message && error.message.toLowerCase().includes("quota"))
+      ) {
+        quotaMonitor.recordQuotaError(error, "sheets");
+
         // Check if we should pause operations
         if (quotaMonitor.shouldPauseOperations()) {
           const pauseDuration = quotaMonitor.getRecommendedPauseDuration();
-          console.warn(`[sheets] QUOTA EXHAUSTED - Pausing operations for ${Math.round(pauseDuration / 1000 / 60)} minutes`);
-          console.warn(`[sheets] Estimated quota reset time: ${quotaMonitor.analyzeQuotaStatus().estimatedResetTime?.toISOString()}`);
+          console.warn(
+            `[sheets] QUOTA EXHAUSTED - Pausing operations for ${Math.round(
+              pauseDuration / 1000 / 60
+            )} minutes`
+          );
+          console.warn(
+            `[sheets] Estimated quota reset time: ${quotaMonitor
+              .analyzeQuotaStatus()
+              .estimatedResetTime?.toISOString()}`
+          );
         }
       }
-      
-      console.error(`[sheets] Error saving batch ${batchNumber}/${totalBatches}:`, {
-        error: error.message || error,
-        status: error.status,
-        code: error.code,
-        batchSize: batch.length,
-        remainingRows: rows.length - i
-      });
-      
+
+      console.error(
+        `[sheets] Error saving batch ${batchNumber}/${totalBatches}:`,
+        {
+          error: error.message || error,
+          status: error.status,
+          code: error.code,
+          batchSize: batch.length,
+          remainingRows: rows.length - i,
+        }
+      );
+
       // Log rate limiter status for debugging
       console.log(`[sheets] Rate limiter status:`, rateLimiter.getStatus());
-      
+
       // Log quota monitor status
       console.log(`[sheets] Quota monitor status:`, quotaMonitor.getStats());
-      
+
       // Re-throw error to be handled by caller
       throw error;
     }
   }
-  
+
   console.log(`[sheets] Completed batch save of all ${rows.length} rows`);
 }
 
@@ -240,7 +270,8 @@ async function openDoc() {
 
 export async function appendToSheetIdempotent(
   rows: RowOut[],
-  sheetName: string
+  sheetName: string,
+  isSyncEstimateAndTimeSpent: boolean = false
 ) {
   if (!rows.length || !sheetName) return { written: 0, updated: 0 };
 
@@ -254,7 +285,10 @@ export async function appendToSheetIdempotent(
   await sheet.loadHeaderRow();
 
   // Create a map of existing rows by issueKey for efficient lookup
-  const issueKeyMap = await createIssueKeyMap(sheet);
+  const issueKeyMap = await createIssueKeyMap(
+    sheet,
+    isSyncEstimateAndTimeSpent
+  );
 
   let updated = 0;
   const rowsToUpdate: any[] = [];
@@ -265,7 +299,11 @@ export async function appendToSheetIdempotent(
 
     if (existingRow) {
       // Update row data (but don't save yet)
-      const updatedRow = updateRow(existingRow, row);
+      const updatedRow = updateRow(
+        existingRow,
+        row,
+        isSyncEstimateAndTimeSpent
+      );
       rowsToUpdate.push(updatedRow);
       updated++;
     }

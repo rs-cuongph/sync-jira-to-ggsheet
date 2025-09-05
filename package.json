@@ -13,7 +13,8 @@
     "run-once": "node dist/sync.js",
     "setup": "tsx src/auth-cli.ts setup",
     "auth": "tsx src/auth-cli.ts auth",
-    "cookie": "tsx src/cookie-cli.ts"
+    "cookie": "tsx src/cookie-cli.ts",
+    "sync-cli": "tsx src/sync-cli.ts"
   },
   "repository": {
     "type": "git",
